@@ -112,16 +112,60 @@
   const slug=m?m[1].toLowerCase()+(m[2]||''):'radiant';
   return [u.replace('wiki.playvalorant.com','wiki.valorant.com'),u,'https://xpulz.com/img/game/valorant/tiers/'+slug+'.png','assets/ranks/'+r.file].filter((x,i,arr)=>x&&arr.indexOf(x)===i);
  }
- function badge(r,cls='rank-img'){
-  const s=rankSources(r);
-  return `<img class="${cls}" src="${clean(s[0])}" data-file="${clean(r.file)}" data-i="0" alt="${clean(r.name)} emblem" loading="lazy" onerror="rankFallback(this)">`;
- }
- window.rankFallback=function(img){
-  const r=ranks.find(x=>x.file===img.dataset.file);if(!r){img.onerror=null;return}
-  const s=rankSources(r),i=(+img.dataset.i||0)+1;
-  if(i>=s.length){img.onerror=null;return}
-  img.dataset.i=i;img.src=s[i];
- };
+
+function badge(r, cls = 'rank-img') {
+  const division = (r.name.match(/ (\d+)$/) || [])[1] || null;
+
+  const wikiFile = division
+    ? `${r.tier}_${division}_Rank.png`
+    : 'Radiant_Rank.png';
+
+  const mirrorFile = division
+    ? `${r.tier.toLowerCase()}${division}.png`
+    : 'radiant.png';
+
+  const wiki =
+    `https://wiki.valorant.com/en-us/images/thumb/${wikiFile}/120px-${wikiFile}`;
+
+  const mirror =
+    `https://xpulz.com/img/game/valorant/tiers/${mirrorFile}`;
+
+  const local = `assets/ranks/${r.file}`;
+
+  // Try the real rank artwork first, not the placeholder PNG.
+  return `<img
+    class="${clean(cls)}"
+    src="${clean(wiki)}"
+    alt="${clean(r.name)} emblem"
+    loading="lazy"
+    data-mirror="${clean(mirror)}"
+    data-local="${clean(local)}"
+    onerror="rankFallback(this)"
+  >`;
+}
+
+function rankFallback(img) {
+  // If the wiki image fails, try the image mirror.
+  if (!img.dataset.stage || img.dataset.stage === 'wiki') {
+    img.dataset.stage = 'mirror';
+    img.src = img.dataset.mirror;
+    return;
+  }
+
+  // If the mirror fails, use the bundled local image.
+  if (img.dataset.stage === 'mirror') {
+    img.dataset.stage = 'local';
+    img.src = img.dataset.local;
+    return;
+  }
+
+  // Last resort: show the app icon rather than a broken image.
+  img.onerror = null;
+  img.src = 'assets/icon-192.png';
+  img.classList.add('rank-fallback');
+}
+
+window.rankFallback = rankFallback;
 
  function start(){const now=today();if(state.started>now){state.started=now;persist()};if(now!==state.lastSeen){state.lastSeen=now;persist();expanded.clear()}ensureDay(now);render()}
  function render(){document.querySelectorAll('.bottom button').forEach(b=>b.classList.toggle('active',b.dataset.tab===activeTab));let body='';if(activeTab==='mission')body=mission();else if(activeTab==='ranks')body=ranking();else if(activeTab==='history')body=history();else body=settings();document.getElementById('app').innerHTML=`<section class="content">${body}</section>`}
