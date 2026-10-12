@@ -1,4 +1,4 @@
-const CACHE='court-rr-static-v1';
+const CACHE='court-rr-static-v2';
 const BASE=new URL('./',self.registration.scope);
 const CORE=['./','./index.html','./style.css','./app.js','./data.js','./manifest.webmanifest','./assets/icon-192.png','./assets/icon-180.png','./assets/icon-512.png'];
 const RANKS=['Iron','Bronze','Silver','Gold','Platinum','Diamond','Ascendant','Immortal'].flatMap(t=>[1,2,3].map(n=>'./assets/ranks/'+t+'_'+n+'_Rank.png')).concat(['./assets/ranks/Radiant_Rank.png']);

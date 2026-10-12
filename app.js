@@ -12,6 +12,38 @@
  const clean=(v)=>String(v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
  const initial=()=>({version:1,started:today(),days:{},settings:{defaultWeather:'dry'},lastSeen:today()});
  let state;let activeTab='mission';let expanded=new Set();
+ let timer=null,timerTick=null,audioCtx=null,wake=null;
+ const fmt=sec=>{sec=Math.max(0,Math.ceil(sec));return Math.floor(sec/60)+':'+String(sec%60).padStart(2,'0')};
+ function primeAudio(){try{audioCtx=audioCtx||new(window.AudioContext||window.webkitAudioContext)();if(audioCtx.state==='suspended')audioCtx.resume()}catch{}}
+ function ring(){
+  try{primeAudio();const c=audioCtx,t0=c.currentTime;
+   for(let i=0;i<8;i++){const o=c.createOscillator(),g=c.createGain(),s=t0+i*0.45;o.type='sine';o.frequency.value=i%2?1175:880;o.connect(g);g.connect(c.destination);g.gain.setValueAtTime(0.0001,s);g.gain.exponentialRampToValueAtTime(0.6,s+0.02);g.gain.exponentialRampToValueAtTime(0.0001,s+0.4);o.start(s);o.stop(s+0.42)}
+  }catch{}
+  try{navigator.vibrate&&navigator.vibrate([300,150,300,150,300])}catch{}
+ }
+ async function keepAwake(on){try{if(on&&navigator.wakeLock){wake=await navigator.wakeLock.request('screen')}else if(wake){await wake.release();wake=null}}catch{}}
+ function stopTimer(){clearInterval(timerTick);timerTick=null;timer=null;keepAwake(false)}
+ function timerLen(ex,day){const t=targetFor(specFor(ex,day)),left=Math.max(1,t.target-(Number(progressFor(ex,day).count)||0));return Math.min(left,t.perSet||left)}
+ function finishTimer(){
+  const t=timer;if(!t)return;stopTimer();ring();
+  const ex=exercises.find(e=>e.id===t.exId),day=ensureDay();
+  if(ex&&keyFor(ex,day)===t.key){const target=targetFor(specFor(ex,day)).target;update(ex,p=>({...p,count:Math.min(target,(Number(p.count)||0)+t.len)}));toast('⏰ Time! +'+t.len+'s logged. Tap ✓ when the whole drill is finished.')}
+  else render();
+ }
+ function runTimer(){clearInterval(timerTick);timerTick=setInterval(()=>{if(!timer||!timer.running)return;const left=timer.endAt-Date.now();if(left<=0){finishTimer();return}const el=document.getElementById('timerRead');if(el)el.textContent=fmt(left/1000)},250)}
+ function toggleTimer(ex,day){
+  primeAudio();
+  const key=keyFor(ex,day);
+  if(!timer||timer.key!==key){stopTimer();const len=timerLen(ex,day);timer={key,exId:ex.id,len,remaining:len*1000,endAt:0,running:false}}
+  if(timer.running){timer.remaining=Math.max(0,timer.endAt-Date.now());timer.running=false;keepAwake(false)}
+  else{timer.endAt=Date.now()+timer.remaining;timer.running=true;keepAwake(true);runTimer()}
+  render();
+ }
+ function timerHtml(ex,key,target,count,done){
+  const t=timer&&timer.key===key?timer:null,len=t?t.len:(target.perSet?Math.min(target.perSet,Math.max(1,target.target-count)):Math.max(1,target.target-count));
+  const left=t?(t.running?Math.max(0,t.endAt-Date.now()):t.remaining)/1000:len,running=!!(t&&t.running);
+  return `<div class="timer-box"><div class="timer-read" id="timerRead">${fmt(left)}</div><div class="micro">${running?'Counting down… rings at zero':t?'Paused':'Next block: '+len+'s · rings when finished'}</div></div><div class="counter-buttons"><button class="primary" data-action="timer-toggle" data-id="${ex.id}" ${done||count>=target.target?'disabled':''}>${running?'⏸ Pause':t?'▶ Resume':'▶ Start timer'}</button><button data-action="timer-reset" data-id="${ex.id}" ${t?'':'disabled'}>Reset</button><button data-action="increment" data-id="${ex.id}" data-amt="-${target.perSet||30}" ${count===0||done?'disabled':''} aria-label="Remove last block">−${target.perSet||30}s</button></div>`;
+ }
  function load(){try{const x=JSON.parse(localStorage.getItem(KEY));if(x&&x.version===1&&typeof x.started==='string'&&x.days&&typeof x.days==='object')return x}catch{}return initial()}
  state=load();
  function persist(){try{localStorage.setItem(KEY,JSON.stringify(state));return true}catch{toast('Storage is full or unavailable. Export your progress.');return false}}
@@ -43,7 +75,7 @@
  }
  function targetFor(s){
   // A primary counter is a practical workload tracker. For complex combined drills, the written prescription remains authoritative.
-  let m=s.match(/(\d+)\s*(?:sets?\s*[x×]|[x×])\s*(\d+)\s*(?:sec|s\b|seconds?)/i);if(m)return {target:+m[1]*+m[2],unit:'sec',detail:'Tracked hold/time; finish the full written prescription.'};
+  let m=s.match(/(\d+)\s*(?:sets?\s*[x×]|[x×])\s*(\d+)\s*(?:sec|s\b|seconds?)/i);if(m)return {target:+m[1]*+m[2],perSet:+m[2],unit:'sec',detail:'Tracked hold/time; finish the full written prescription.'};
   m=s.match(/(\d+)\s*(?:sets?\s*[x×]|[x×])\s*(\d+)\s*(?:reps?)?\s*(?:\/\s*(?:leg|side))?/i);if(m)return {target:+m[1]*+m[2]*(/\/\s*(leg|side)/i.test(s.slice(m.index,m.index+m[0].length+12))?2:1),unit:'reps',detail:'Primary movement counter; complete every prescribed component.'};
   m=s.match(/(\d+)\s*sets?\s*[x×]\s*(\d+)/i);if(m)return {target:+m[1]*+m[2],unit:'reps',detail:'Primary movement counter; complete every prescribed component.'};
   m=s.match(/(\d+)\s*(?:reps?|makes?|catches?|touches?)(?:\s*\/\s*(?:side|leg))?/i);if(m)return {target:+m[1]*(/\/\s*(side|leg)/i.test(s.slice(m.index,m.index+m[0].length+12))?2:1),unit:'reps',detail:'Primary movement counter; complete every prescribed component.'};
@@ -74,10 +106,22 @@
   return {rr:Math.round(rr),streak,best,misses,fullDays,loss,earn};
  }
  function rankOf(rr){let i=0;while(i<ranks.length-1&&rr>=ranks[i+1].threshold)i++;return {...ranks[i],index:i,next:ranks[i+1]||null}}
- function badge(r,cls='rank-img'){
-  const src='assets/ranks/'+r.file;
-  return `<img class="${cls}" src="${clean(src)}" alt="${clean(r.name)} emblem" loading="lazy">`;
+ function rankSources(r){
+  const u=String(r.image||'').split(']')[0];
+  const m=String(r.name).match(/^(\w+)\s*(\d)?$/);
+  const slug=m?m[1].toLowerCase()+(m[2]||''):'radiant';
+  return [u.replace('wiki.playvalorant.com','wiki.valorant.com'),u,'https://xpulz.com/img/game/valorant/tiers/'+slug+'.png','assets/ranks/'+r.file].filter((x,i,arr)=>x&&arr.indexOf(x)===i);
  }
+ function badge(r,cls='rank-img'){
+  const s=rankSources(r);
+  return `<img class="${cls}" src="${clean(s[0])}" data-file="${clean(r.file)}" data-i="0" alt="${clean(r.name)} emblem" loading="lazy" onerror="rankFallback(this)">`;
+ }
+ window.rankFallback=function(img){
+  const r=ranks.find(x=>x.file===img.dataset.file);if(!r){img.onerror=null;return}
+  const s=rankSources(r),i=(+img.dataset.i||0)+1;
+  if(i>=s.length){img.onerror=null;return}
+  img.dataset.i=i;img.src=s[i];
+ };
 
  function start(){const now=today();if(state.started>now){state.started=now;persist()};if(now!==state.lastSeen){state.lastSeen=now;persist();expanded.clear()}ensureDay(now);render()}
  function render(){document.querySelectorAll('.bottom button').forEach(b=>b.classList.toggle('active',b.dataset.tab===activeTab));let body='';if(activeTab==='mission')body=mission();else if(activeTab==='ranks')body=ranking();else if(activeTab==='history')body=history();else body=settings();document.getElementById('app').innerHTML=`<section class="content">${body}</section>`}
@@ -98,16 +142,18 @@
  }
  function exHtml(ex,day){const key=keyFor(ex,day),p=progressFor(ex,day),done=!!p.done,spec=specFor(ex,day),target=targetFor(spec),count=Math.max(0,Math.min(target.target,Number(p.count)||0)),percent=done?100:Math.round(100*count/target.target),wide=target.target>20,open=expanded.has(key);
   return `<div class="ex"><div class="ex-top"><button aria-label="${done?'Undo':'Complete'} ${clean(ex.title)}" class="check ${done?'checked':''}" data-action="toggle" data-id="${ex.id}">${done?'✓':'○'}</button><button class="ex-title" style="background:none;border:0;color:inherit;text-align:left;padding:2px 0" data-action="expand" data-id="${ex.id}" aria-expanded="${open}">${clean(ex.title)} <span style="color:var(--muted);font-size:12px">${open?'⌃':'⌄'}</span></button><span class="rr">+${reward(ex)} RR</span></div><div class="prescription">${clean(spec)}</div>
-  ${open?`<div class="counter-panel"><div class="counter-label"><span>${done?'✓ Complete':`Tap counter · ${target.unit}`}</span><b>${done?target.target:count} / ${target.target} ${target.unit}</b></div><div class="progress"><div style="width:${percent}%"></div></div><div class="counter-buttons"><button data-action="increment" data-id="${ex.id}" data-amt="-1" ${count===0||done?'disabled':''} aria-label="Subtract one">−1</button><button class="primary" data-action="increment" data-id="${ex.id}" data-amt="1" ${done?'disabled':''}>+1</button>${wide?`<button data-action="increment" data-id="${ex.id}" data-amt="5" ${done?'disabled':''}>+5</button><button data-action="increment" data-id="${ex.id}" data-amt="10" ${done?'disabled':''}>+10</button>`:''}${target.unit==='sec'?`<button data-action="increment" data-id="${ex.id}" data-amt="30" ${done?'disabled':''}>+30s</button>`:''}</div><p class="footnote">${clean(target.detail)} Counters track a primary metric, not necessarily every movement in a compound prescription. Reaching the target does not auto-certify the whole drill: tap ✓ when all components are finished.</p></div>`:''}</div>`;
+  ${open?`<div class="counter-panel"><div class="counter-label"><span>${done?'✓ Complete':`${target.unit==='sec'?'Timer':'Tap counter'} · ${target.unit}`}</span><b>${done?target.target:count} / ${target.target} ${target.unit}</b></div><div class="progress"><div style="width:${percent}%"></div></div>${target.unit==='sec'?timerHtml(ex,key,target,count,done):`<div class="counter-buttons"><button data-action="increment" data-id="${ex.id}" data-amt="-1" ${count===0||done?'disabled':''} aria-label="Subtract one">−1</button><button class="primary" data-action="increment" data-id="${ex.id}" data-amt="1" ${done?'disabled':''}>+1</button>${wide?`<button data-action="increment" data-id="${ex.id}" data-amt="5" ${done?'disabled':''}>+5</button><button data-action="increment" data-id="${ex.id}" data-amt="10" ${done?'disabled':''}>+10</button>`:''}${target.unit==='sec'?`<button data-action="increment" data-id="${ex.id}" data-amt="30" ${done?'disabled':''}>+30s</button>`:''}</div>`}<p class="footnote">${clean(target.detail)} Counters track a primary metric, not necessarily every movement in a compound prescription. Reaching the target does not auto-certify the whole drill: tap ✓ when all components are finished.</p></div>`:''}</div>`;
  }
  function ranking(){const s=stats(),r=rankOf(s.rr);return `<div class="eyebrow">◈ COMPETITIVE PROGRESSION</div><h1 class="heading">RANK LADDER<span class="accent">.</span></h1><p class="sub">25 ranks. RR can rise and fall. Exercise prescriptions scale by rank family, locked for each day.</p><div class="stat-row"><div class="stat"><b>${s.rr.toLocaleString()}</b><small>Net RR</small></div><div class="stat"><b>${s.fullDays}</b><small>Full days</small></div><div class="stat"><b>${s.best}</b><small>Best streak</small></div></div><div class="rank-list">${ranks.map((rank,i)=>`<div class="rank-item ${i===r.index?'current':''}">${badge(rank)}<div><strong>${clean(rank.name)}</strong><span class="micro">Unlock at ${rank.threshold.toLocaleString()} RR${i>0?' · '+(rank.threshold-ranks[i-1].threshold).toLocaleString()+' RR step':''}</span></div><span class="tag">${i===r.index?'CURRENT':i<r.index?'✓':'LOCKED'}</span></div>`).join('')}</div><p class="footnote">Radiant requires ${ranks[ranks.length-1].threshold.toLocaleString()} net RR. Rank changes based on actual score. Each family has its own exercise difficulty; subdivisions share the family prescription. There are no artificial streak prerequisites.</p>`}
  function history(){const s=stats(),all=dateRange(today()).reverse(),last=all.slice(0,60);return `<div class="eyebrow">◈ PERFORMANCE LOG</div><h1 class="heading">HISTORY<span class="accent">.</span></h1><p class="sub">Automatically tracked from first use. Only today's workout can be edited.</p><div class="stat-row"><div class="stat"><b class="success">+${s.earn.toLocaleString()}</b><small>Earned</small></div><div class="stat"><b class="danger">−${s.loss.toLocaleString()}</b><small>Penalties</small></div><div class="stat"><b>${s.fullDays}</b><small>Cleared</small></div></div><div class="card">${last.map(date=>{const day=state.days[date],items=dayExercises(date),count=day?getCompleted(date,day):0,full=count===items.length,isNow=date===today(),earned=day?items.filter(x=>complete(x,day)).reduce((n,x)=>n+reward(x),0):0;return `<div class="history-row"><div><strong>${clean(date)}</strong><div class="micro">${count}/${items.length} drills · ${day?day.weather:'no workout'} · +${earned} base RR</div></div><span class="${full?'success':isNow?'muted':'danger'}">${full?'✓ CLEARED':isNow?'IN PROGRESS':'MISSED'}</span></div>`}).join('')}</div><p class="footnote">Most recent 60 days displayed; the full stored record is used for ranking. Missing-day penalties double across consecutive missed days.</p>`}
  function settings(){return `<div class="eyebrow">◈ PERSONAL CONTROL</div><h1 class="heading">SETTINGS<span class="accent">.</span></h1><p class="sub">Your data stays on this device and this browser. No accounts, no server.</p><div class="card"><div class="setting-row"><label for="defaultWeather">Default weather for future days</label><select class="field" id="defaultWeather"><option value="dry" ${state.settings.defaultWeather==='dry'?'selected':''}>☀ Dry / outdoor</option><option value="rain" ${state.settings.defaultWeather==='rain'?'selected':''}>🌧 Rain / indoor</option></select><p>You can change today's conditions from the mission screen.</p></div><div class="setting-row"><label>Backup progress</label><p>Export JSON and save it in Files/iCloud. Import restores scores, completed drills, and rank snapshots on this browser. Do this before switching phones or clearing Safari data.</p><button class="button" data-action="export">⬇ Export backup</button><label style="margin-top:13px" for="importFile">Import backup (.json)</label><input class="field" type="file" id="importFile" accept="application/json,.json"></div></div><div class="card"><strong>Training and scoring rules</strong><p class="footnote">Monday: morning + upper; Tuesday: morning + lower; Wednesday: morning + upper + lower; Thursday: morning + match; Friday: morning + recovery; Saturday: morning + shooting/defence; Sunday: morning + finishing/handles.</p><p class="footnote">Per exercise +7 RR morning, +12 recovery, +13 lower, +14 skills, +15 upper, +20 match. Full day +18 RR plus +2 per consecutive successful day (max +28 streak bonus). Incomplete past days: −10 × 2^(consecutive misses − 1), capped to avoid overflow. Net RR may be negative. Toggling exercises recalculates scores instead of adding duplicate rewards.</p><p class="footnote">Rain swaps court drills for indoor technique equivalents and changes Thursday's match into a safer practice session. Exact court/match performance is not implied.</p></div><div class="card"><strong>Reset</strong><p class="footnote">Deletes this installation's progress permanently. Export first.</p><button class="button danger-btn" data-action="reset">Delete all local progress</button></div><p class="footnote">For iPhone installation: open your GitHub Pages URL in Safari, tap Share → Add to Home Screen. LocalStorage can be cleared by iOS/browser; regular backups are recommended. No cross-device sync.</p>`}
  function update(ex,fn){const date=today(),day=ensureDay(date),key=keyFor(ex,day),p=progressFor(ex,day);day.progress[key]=fn({...p});persist();render()}
  document.addEventListener('click',e=>{const b=e.target.closest('[data-action]');if(!b)return;const act=b.dataset.action,id=Number(b.dataset.id),ex=exercises.find(e=>e.id===id),day=ensureDay();
-  if(act==='weather'){if(day.weather!==b.dataset.mode){day.weather=b.dataset.mode;expanded.clear();persist();render();toast('Weather mode updated. Indoor and outdoor counters are separate.')}return}
+  if(act==='weather'){if(day.weather!==b.dataset.mode){day.weather=b.dataset.mode;stopTimer();expanded.clear();persist();render();toast('Weather mode updated. Indoor and outdoor counters are separate.')}return}
   if(act==='expand'&&ex){const k=keyFor(ex,day);expanded.has(k)?expanded.delete(k):expanded.add(k);render();return}
   if(act==='toggle'&&ex){update(ex,p=>({...p,done:!p.done,count:!p.done?targetFor(specFor(ex,day)).target:0}));return}
+  if(act==='timer-toggle'&&ex){toggleTimer(ex,day);return}
+  if(act==='timer-reset'){stopTimer();render();return}
   if(act==='increment'&&ex){const target=targetFor(specFor(ex,day)).target;const amt=Number(b.dataset.amt);update(ex,p=>({...p,count:Math.max(0,Math.min(target,(Number(p.count)||0)+amt))}));return}
   if(act==='group'){const list=dayExercises(today()).filter(x=>x.category===b.dataset.cat);const all=list.every(ex=>complete(ex,day));for(const ex of list){const key=keyFor(ex,day);day.progress[key]={done:!all,count:!all?targetFor(specFor(ex,day)).target:0}}persist();render();toast(all?'Group unchecked':'Group completed');return}
   if(act==='export'){const blob=new Blob([JSON.stringify(state,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='court-rr-backup-'+today()+'.json';document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),6000);return}
