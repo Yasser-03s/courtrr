@@ -7,10 +7,14 @@
  const localDate=(d=new Date())=>[d.getFullYear(),String(d.getMonth()+1).padStart(2,'0'),String(d.getDate()).padStart(2,'0')].join('-');
  const epochDate=s=>Date.parse(s+'T00:00:00Z')/DAY_MS;
  const isoAt=n=>new Date((n*DAY_MS)+12*3600000).toISOString().slice(0,10);
- const dayIndex=s=>new Date(s+'T12:00:00').getDay();
+ const jsDay=s=>new Date(s+'T12:00:00').getDay();
+ const dayIndex=s=>(jsDay(s)+6)%7; // data.js uses Monday=0 … Sunday=6
+ const FIX_FROM='2026-10-15',ONE_OFF={'2026-10-14':[1,2,3,4,5,6,7,8]}; // one-time catch-up: Wed 14 Oct = morning + upper only
+ // Days before state.legacyBefore were logged under the old (shifted) schedule; keep them as they were so history/streak stay intact.
+ function migrate(x){if(!x||x.scheduleFixed)return x;x.scheduleFixed=true;const t=today();x.legacyBefore=t>FIX_FROM?t:FIX_FROM;if(t<=FIX_FROM&&ONE_OFF[t]){x.overrides=Object.assign({},x.overrides,{[t]:ONE_OFF[t]})}return x}
  const today=()=>localDate();
  const clean=(v)=>String(v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
- const initial=()=>({version:1,started:today(),days:{},settings:{defaultWeather:'dry'},lastSeen:today()});
+ const initial=()=>({version:1,scheduleFixed:true,started:today(),days:{},settings:{defaultWeather:'dry'},lastSeen:today()});
  let state;let activeTab='mission';let expanded=new Set();let showDone=false,rankOpen=-1,cmpEx=1;
  let timer=null,timerTick=null,audioCtx=null,wake=null;
  const fmt=sec=>{sec=Math.max(0,Math.ceil(sec));return Math.floor(sec/60)+':'+String(sec%60).padStart(2,'0')};
@@ -44,8 +48,8 @@
   const left=t?(t.running?Math.max(0,t.endAt-Date.now()):t.remaining)/1000:len,running=!!(t&&t.running);
   return `<div class="timer-box"><div class="timer-read" id="timerRead">${fmt(left)}</div><div class="micro">${running?'Counting down… rings at zero':t?'Paused':'Next block: '+len+'s · rings when finished'}</div></div><div class="counter-buttons"><button class="primary" data-action="timer-toggle" data-id="${ex.id}" ${done||count>=target.target?'disabled':''}>${running?'⏸ Pause':t?'▶ Resume':'▶ Start timer'}</button><button data-action="timer-reset" data-id="${ex.id}" ${t?'':'disabled'}>Reset</button><button data-action="increment" data-id="${ex.id}" data-amt="-${target.perSet||30}" ${count===0||done?'disabled':''} aria-label="Remove last block">−${target.perSet||30}s</button></div>`;
  }
- function load(){try{const x=JSON.parse(localStorage.getItem(KEY));if(x&&x.version===1&&typeof x.started==='string'&&x.days&&typeof x.days==='object')return x}catch{}return initial()}
- state=load();
+ function load(){try{const x=JSON.parse(localStorage.getItem(KEY));if(x&&x.version===1&&typeof x.started==='string'&&x.days&&typeof x.days==='object')return migrate(x)}catch{}return initial()}
+ state=load();persist();
  function persist(){try{localStorage.setItem(KEY,JSON.stringify(state));return true}catch{toast('Storage is full or unavailable. Export your progress.');return false}}
  function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');clearTimeout(toast.timer);toast.timer=setTimeout(()=>t.classList.remove('show'),2600)}
  function ensureDay(date=today()){
@@ -86,7 +90,7 @@
   m=s.match(/\b(\d+)\s*(?:[+]|\b)/);if(m)return {target:Math.min(500,+m[1]),unit:'reps',detail:'Primary action tracked; check full prescription before marking done.'};
   return {target:1,unit:'set',detail:'Mark complete after the full written drill.'};
  }
- function dayExercises(date){return exercises.filter(ex=>ex.days.includes(dayIndex(date)))}
+ function dayExercises(date){const ov=state.overrides&&state.overrides[date];if(Array.isArray(ov))return exercises.filter(ex=>ov.includes(ex.id));const idx=(state.legacyBefore&&date<state.legacyBefore)?jsDay(date):dayIndex(date);return exercises.filter(ex=>ex.days.includes(idx))}
  function keyFor(ex,day){return ex.id+'_'+(day.weather==='rain'&&ex.id>=13?'rain':'dry')}
  function progressFor(ex,day){return day.progress?.[keyFor(ex,day)]||{count:0,done:false}}
  function complete(ex,day){return !!progressFor(ex,day).done}
@@ -252,7 +256,7 @@ window.rankFallback = rankFallback;
  document.addEventListener('change',async e=>{
   if(e.target.id==='cmpEx'){const v=Number(e.target.value);if(exercises.some(x=>x.id===v)){cmpEx=v;render()}return}
   if(e.target.id==='defaultWeather'){state.settings.defaultWeather=e.target.value;persist();toast('Default weather saved')}
-  if(e.target.id==='importFile'&&e.target.files?.length){try{const text=await e.target.files[0].text(),data=JSON.parse(text);if(data.version!==1||!/^\d{4}-\d{2}-\d{2}$/.test(data.started)||!data.days||typeof data.days!=='object'||Array.isArray(data.days)||!data.settings)throw Error('Invalid backup format');if(!confirm('Replace ALL existing local workout data with this backup?'))return;state=data;state.settings.defaultWeather=state.settings.defaultWeather==='rain'?'rain':'dry';if(state.started>today())state.started=today();persist();expanded.clear();start();toast('Backup restored')}catch(err){toast('Import failed: '+err.message)}}
+  if(e.target.id==='importFile'&&e.target.files?.length){try{const text=await e.target.files[0].text(),data=JSON.parse(text);if(data.version!==1||!/^\d{4}-\d{2}-\d{2}$/.test(data.started)||!data.days||typeof data.days!=='object'||Array.isArray(data.days)||!data.settings)throw Error('Invalid backup format');if(!confirm('Replace ALL existing local workout data with this backup?'))return;state=migrate(data);state.settings.defaultWeather=state.settings.defaultWeather==='rain'?'rain':'dry';if(state.started>today())state.started=today();persist();expanded.clear();start();toast('Backup restored')}catch(err){toast('Import failed: '+err.message)}}
  });
  document.addEventListener('visibilitychange',()=>{if(!document.hidden&&today()!==state.lastSeen)start()});
  window.addEventListener('focus',()=>{if(today()!==state.lastSeen)start()});
